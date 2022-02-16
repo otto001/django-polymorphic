@@ -14,7 +14,7 @@ from .query_translate import (
     translate_polymorphic_field_path,
     translate_polymorphic_filter_definitions_in_args,
     translate_polymorphic_filter_definitions_in_kwargs,
-    translate_polymorphic_Q_object,
+    translate_polymorphic_Q_object, get_query_related_name,
 )
 
 # chunk-size: maximum number of objects requested per db-request
@@ -187,6 +187,17 @@ class PolymorphicQuerySet(QuerySet):
             return super()._filter_or_exclude(
                 negate, *(list(q_objects) + additional_args), **kwargs
             )
+
+    def select_related(self, *fields):
+        if fields and fields != (None,):
+            fields = [
+                translate_polymorphic_field_path(self.model, a)
+                if isinstance(a, str)
+                else a  # allow expressions to pass unchanged
+                for a in fields
+            ]
+
+        return super().select_related(*fields)
 
     def order_by(self, *field_names):
         """translate the field paths in the args, then call vanilla order_by."""
@@ -410,6 +421,13 @@ class PolymorphicQuerySet(QuerySet):
                     indexlist_per_model[real_concrete_class].append((i, len(resultlist)))
                     resultlist.append(None)
 
+        child_class_query_names = {get_query_related_name(cls) for cls in idlist_per_model.keys()}
+        if isinstance(self.query.select_related, dict):
+            non_polymorphic_select_related = {related for related in self.query.select_related.keys()
+                                              if related not in child_class_query_names}
+        else:
+            non_polymorphic_select_related = self.query.select_related
+
         # For each model in "idlist_per_model" request its objects (the real model)
         # from the db and store them in results[].
         # Then we copy the annotate fields from the base objects to the real objects.
@@ -421,7 +439,7 @@ class PolymorphicQuerySet(QuerySet):
                 **{("%s__in" % pk_name): idlist}
             )
             # copy select related configuration to new qs
-            real_objects.query.select_related = self.query.select_related
+            real_objects.query.select_related = False
 
             # Copy deferred fields configuration to the new queryset
             deferred_loading_fields = []
@@ -482,6 +500,18 @@ class PolymorphicQuerySet(QuerySet):
                     for select_field_name in self.query.extra_select.keys():
                         attr = getattr(base_object, select_field_name)
                         setattr(real_object, select_field_name, attr)
+
+                if self.query.select_related:
+                    for related in non_polymorphic_select_related:
+                        attr = getattr(base_object, related)
+                        setattr(real_object, related, attr)
+
+                    real_class_query_name = get_query_related_name(real_class)
+                    if polymorphic_select_related := self.query.select_related.get(real_class_query_name):
+                        related_object = getattr(base_object, real_class_query_name)
+                        for related in polymorphic_select_related:
+                            attr = getattr(related_object, related)
+                            setattr(real_object, related, attr)
 
                 resultlist[j] = real_object
 
