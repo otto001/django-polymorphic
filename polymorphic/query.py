@@ -46,10 +46,16 @@ class PolymorphicModelIterable(ModelIterable):
         but it requests the objects in chunks from the database,
         with Polymorphic_QuerySet_objects_per_request per chunk
         """
+        polymorphic_query = self.queryset.query.clone()
+        non_polymorphic_query = self.queryset.query
+
+        # select_related will be handled in _get_real_instances
+        non_polymorphic_query.select_related = False
+
         while True:
             base_result_objects = []
             reached_end = False
-
+            self.queryset.query = non_polymorphic_query
             # Make sure the base iterator is read in chunks instead of
             # reading it completely, in case our caller read only a few objects.
             for i in range(Polymorphic_QuerySet_objects_per_request):
@@ -61,6 +67,7 @@ class PolymorphicModelIterable(ModelIterable):
                     reached_end = True
                     break
 
+            self.queryset.query = polymorphic_query
             real_results = self.queryset._get_real_instances(base_result_objects)
 
             for o in real_results:
@@ -111,6 +118,8 @@ class PolymorphicQuerySet(QuerySet):
         # retrieving the real instance (so that the deferred fields apply
         # to that queryset as well).
         self.polymorphic_deferred_loading = (set(), True)
+
+        self.polymorphic_select_related = dict()
 
     def _clone(self, *args, **kwargs):
         # Django's _clone only copies its own variables, so we need to copy ours here
@@ -421,9 +430,11 @@ class PolymorphicQuerySet(QuerySet):
                     indexlist_per_model[real_concrete_class].append((i, len(resultlist)))
                     resultlist.append(None)
 
-        child_class_query_names = {get_query_related_name(cls) for cls in idlist_per_model.keys()}
+        # if select_related is a dict, we need to remove clauses specific to a child class to avoid errors
+        # these removed clauses are then later added only to the queries for the child class
         if isinstance(self.query.select_related, dict):
-            non_polymorphic_select_related = {related for related in self.query.select_related.keys()
+            child_class_query_names = {get_query_related_name(cls) for cls in idlist_per_model.keys()}
+            non_polymorphic_select_related = {related: fields for related, fields in self.query.select_related.items()
                                               if related not in child_class_query_names}
         else:
             non_polymorphic_select_related = self.query.select_related
@@ -438,8 +449,19 @@ class PolymorphicQuerySet(QuerySet):
             real_objects = real_concrete_class._base_objects.db_manager(self.db).filter(
                 **{("%s__in" % pk_name): idlist}
             )
+
             # copy select related configuration to new qs
-            real_objects.query.select_related = False
+            # if select_related is a dict, we need to be careful to only add valid select related clauses
+            # (i.e. those that can be executed on that child class)
+            if isinstance(self.query.select_related, dict):
+                polymorphic_select_related = self.query.select_related.get(
+                    get_query_related_name(real_concrete_class), None)
+
+                if polymorphic_select_related:
+                    polymorphic_select_related.update(non_polymorphic_select_related)
+                    real_objects.query.select_related = polymorphic_select_related
+            else:
+                real_objects.query.select_related = non_polymorphic_select_related
 
             # Copy deferred fields configuration to the new queryset
             deferred_loading_fields = []
@@ -500,18 +522,6 @@ class PolymorphicQuerySet(QuerySet):
                     for select_field_name in self.query.extra_select.keys():
                         attr = getattr(base_object, select_field_name)
                         setattr(real_object, select_field_name, attr)
-
-                if self.query.select_related:
-                    for related in non_polymorphic_select_related:
-                        attr = getattr(base_object, related)
-                        setattr(real_object, related, attr)
-
-                    real_class_query_name = get_query_related_name(real_class)
-                    if polymorphic_select_related := self.query.select_related.get(real_class_query_name):
-                        related_object = getattr(base_object, real_class_query_name)
-                        for related in polymorphic_select_related:
-                            attr = getattr(related_object, related)
-                            setattr(real_object, related, attr)
 
                 resultlist[j] = real_object
 
