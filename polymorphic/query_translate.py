@@ -22,6 +22,8 @@ from polymorphic import compat
 ###################################################################################
 # PolymorphicQuerySet support functions
 
+CACHE_SIZE = 64
+
 
 def translate_polymorphic_filter_definitions_in_kwargs(
     queryset_model, kwargs, using=DEFAULT_DB_ALIAS
@@ -127,7 +129,7 @@ def _translate_polymorphic_filter_definition(
     return (newpath, field_val)
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=CACHE_SIZE)
 def translate_polymorphic_field_path(queryset_model, field_path):
     """
     Translate a field path from a keyword argument, as used for
@@ -208,6 +210,7 @@ def translate_polymorphic_field_path(queryset_model, field_path):
     return newpath
 
 
+@lru_cache(maxsize=CACHE_SIZE)
 def _get_all_sub_models(base_model):
     """#Collect all sub-models, this should be optimized (cached)"""
     result = {}
@@ -235,7 +238,7 @@ def _get_all_sub_models(base_model):
     return result
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=CACHE_SIZE)
 def _create_base_path(baseclass, myclass):
     # create new field path for expressions, e.g. for baseclass=ModelA, myclass=ModelC
     # 'modelb__modelc" is returned
@@ -252,7 +255,7 @@ def _create_base_path(baseclass, myclass):
     return ""
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=CACHE_SIZE)
 def get_query_related_name(myclass):
     for f in myclass._meta.local_fields:
         if isinstance(f, models.OneToOneField) and f.remote_field.parent_link:
@@ -261,6 +264,11 @@ def get_query_related_name(myclass):
     # Fallback to undetected name,
     # this happens on proxy models (e.g. SubclassSelectorProxyModel)
     return myclass.__name__.lower()
+
+
+@lru_cache(maxsize=CACHE_SIZE)
+def get_sub_models_query_related_names(model):
+    return {get_query_related_name(sub_model) for sub_model in _get_all_sub_models(model).values()}
 
 
 def create_instanceof_q(modellist, not_instance_of=False, using=DEFAULT_DB_ALIAS):
@@ -305,3 +313,4 @@ def _get_mro_content_type_ids(models, using):
         if subclasses:
             contenttype_ids.update(_get_mro_content_type_ids(subclasses, using))
     return contenttype_ids
+
