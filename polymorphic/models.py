@@ -10,7 +10,7 @@ from polymorphic.compat import with_metaclass
 
 from .base import PolymorphicModelBase
 from .managers import PolymorphicManager
-from .query_translate import translate_polymorphic_Q_object, get_query_related_name
+from .query_translate import translate_polymorphic_Q_object
 
 
 ###################################################################################
